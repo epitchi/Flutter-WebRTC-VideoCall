@@ -1,4 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:sdp_transform/sdp_transform.dart';
 
 void main() {
   runApp(MyApp());
@@ -11,34 +15,15 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Flutter Demo',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
         primarySwatch: Colors.blue,
       ),
-      home: MyHomePage(title: 'Flutter Demo Home Page'),
+      home: MyHomePage(title: 'Flutter Web RTC Video Call'),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
   MyHomePage({Key? key, required this.title}) : super(key: key);
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
   final String title;
 
   @override
@@ -46,68 +31,215 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  bool _offer = false;
+  late RTCPeerConnection _peerConnection;
+  late MediaStream _localStream;
+  final _localRenderer = new RTCVideoRenderer();
+  final _remoteRenderer = RTCVideoRenderer();
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  final sdpController = TextEditingController();
+
+  @override
+  void dispose() {
+    _localRenderer.dispose();
+    _remoteRenderer.dispose();
+    sdpController.dispose();
+    super.dispose();
   }
 
   @override
+  void initState() {
+    initRenderers();
+    _createPeerConnection().then((pc) {
+      _peerConnection = pc;
+    });
+    super.initState();
+  }
+
+  initRenderers() async {
+    await _localRenderer.initialize();
+    await _remoteRenderer.initialize();
+  }
+
+  _createPeerConnection() async {
+    Map<String, dynamic> configuration = {
+      "iceServers": [
+        {"url": "stun:stun.l.google.com:19302"}
+      ]
+    };
+
+    final Map<String, dynamic> offerSdpConstraints = {
+      "mandatory": {
+        "OfferToReceiveAudio": true,
+        "OfferToReceiveVideo": true,
+      },
+      "optional": []
+    };
+
+    _localStream = await _getUserMedia();
+
+    RTCPeerConnection pc =
+        await createPeerConnection(configuration, offerSdpConstraints);
+
+    pc.addStream(_localStream);
+
+    pc.onIceCandidate = (e) {
+      if (e.candidate != null) {
+        print(json.encode({
+          'candidate': e.candidate.toString(),
+          'sdpMid': e.sdpMid.toString(),
+          'sdpMlineIndex': e.sdpMlineIndex,
+        }));
+      }
+    };
+
+    pc.onIceConnectionState = (e) {
+      print(e);
+    };
+
+    pc.onAddStream = (stream) {
+      print('addStream' + stream.id);
+      _remoteRenderer.srcObject = stream;
+    };
+
+    return pc;
+  }
+
+  _getUserMedia() async {
+    final Map<String, dynamic> mediaConstraints = {
+      'audio': true,
+      'video': {
+        'facingMode': 'user',
+      }
+    };
+
+    MediaStream stream =
+        await navigator.mediaDevices.getUserMedia(mediaConstraints);
+
+    _localRenderer.srcObject = stream;
+
+    return stream;
+  }
+
+  void _createOffer() async {
+    RTCSessionDescription description =
+        await _peerConnection.createOffer({'offerToReiceveVideo': 1});
+    var session = parse(description.sdp.toString());
+    print(json.encode(session));
+    _offer = true;
+
+    _peerConnection.setLocalDescription(description);
+  }
+
+  void _createAnswer() async {
+    RTCSessionDescription description =
+        await _peerConnection.createAnswer({'offerToReiceveVideo': 1});
+    var session = parse(description.sdp.toString());
+    print(json.encode(session));
+
+    _peerConnection.setLocalDescription(description);
+  }
+
+  void setRemoteDescription() async {
+    String jsonString = sdpController.text;
+    dynamic session = await jsonDecode('$jsonString');
+
+    String sdp = write(session, null);
+
+    RTCSessionDescription description =
+        new RTCSessionDescription(sdp, _offer ? 'answer' : 'offer');
+
+    print(description.toMap());
+
+    await _peerConnection.setRemoteDescription(description);
+  }
+
+  void _setCandidate() async {
+    String jsonString = sdpController.text;
+    dynamic session = await jsonDecode('$jsonString');
+    print(session['candidate']);
+    dynamic candidate = new RTCIceCandidate(
+        session['candidate'], session['sdpMid'], session['sdpMlineIndex']);
+
+    await _peerConnection.addCandidate(candidate);
+  }
+
+  SizedBox videoRenderers() {
+
+    return SizedBox(
+      height: 210,
+      child: Row(
+        children: [
+          Flexible(
+            child: Container(
+              key: Key("local"),
+              margin: EdgeInsets.fromLTRB(5.0, 5.0, 5.0, 5.0),
+              decoration: BoxDecoration(color: Colors.black),
+              child: RTCVideoView(_localRenderer),
+            ),
+          ),
+          Flexible(
+              child: new Container(
+            key: new Key("remote"),
+            margin: new EdgeInsets.fromLTRB(5.0, 5.0, 5.0, 5.0),
+            decoration: new BoxDecoration(color: Colors.black),
+            child: RTCVideoView(_remoteRenderer),
+          ))
+        ],
+      ),
+    );
+  }
+
+  Row offerAndAnswerButtons() => Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: <Widget>[
+          ElevatedButton(
+            onPressed: _createOffer,
+            child: Text("Offer"),
+          ),
+          ElevatedButton(
+            onPressed: _createAnswer,
+            child: Text("Answer"),
+          )
+        ],
+      );
+
+  Padding sdpCandidateTF() => Padding(
+        padding: EdgeInsets.all(16.0),
+        child: TextField(
+          controller: sdpController,
+          keyboardType: TextInputType.multiline,
+          maxLines: 4,
+          maxLength: TextField.noMaxLength,
+        ),
+      );
+
+  Row sdpCandidateButtons() => Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: <Widget>[
+          ElevatedButton(
+              onPressed: setRemoteDescription, child: Text('Set Remote Desc')),
+          ElevatedButton(onPressed: _setCandidate, child: Text('Set Candidate'))
+        ],
+      );
+
+  @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
         title: Text(widget.title),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: Container(
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headline4,
-            ),
+            videoRenderers(),
+            offerAndAnswerButtons(),
+            sdpCandidateTF(),
+            sdpCandidateButtons(),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
