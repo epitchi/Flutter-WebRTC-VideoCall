@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:sdp_transform/sdp_transform.dart';
-
+import 'package:messagepack/messagepack.dart';
 void main() {
   runApp(MyApp());
 }
@@ -38,6 +38,8 @@ class _MyHomePageState extends State<MyHomePage> {
   final _remoteRenderer = RTCVideoRenderer();
 
   final sdpController = TextEditingController();
+
+
 
   @override
   void dispose() {
@@ -85,6 +87,15 @@ class _MyHomePageState extends State<MyHomePage> {
 
     pc.onIceCandidate = (e) {
       if (e.candidate != null) {
+        final packer = Packer();
+        packer.packString(e.candidate);
+        packer.packString(e.sdpMid.toString());
+        packer.packString(e.sdpMlineIndex.toString());
+        final bytes = packer.takeBytes();
+        print("Message Pack convert below");
+        print(bytes);
+
+        print("Json code candidate");
         print(json.encode({
           'candidate': e.candidate.toString(),
           'sdpMid': e.sdpMid.toString(),
